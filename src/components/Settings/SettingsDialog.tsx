@@ -13,7 +13,7 @@ import { Button } from "../ui/button";
 import { Settings } from "lucide-react";
 import { useToast } from "../../contexts/toast";
 
-type APIProvider = "openai" | "gemini" | "anthropic";
+type APIProvider = "openai" | "gemini" | "anthropic" | "github";
 
 type AIModel = {
   id: string;
@@ -28,6 +28,7 @@ type ModelCategory = {
   openaiModels: AIModel[];
   geminiModels: AIModel[];
   anthropicModels: AIModel[];
+  githubModels: AIModel[];
 };
 
 // Define available models for each category
@@ -76,6 +77,23 @@ const modelCategories: ModelCategory[] = [
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
       }
+    ],
+    githubModels: [
+      {
+        id: "openai/gpt-4.1",
+        name: "GPT-4.1",
+        description: "Latest GPT-4 model via GitHub Models"
+      },
+      {
+        id: "openai/gpt-4o",
+        name: "GPT-4o",
+        description: "Vision-capable GPT-4 optimized"
+      },
+      {
+        id: "openai/gpt-4o-mini",
+        name: "GPT-4o Mini",
+        description: "Faster, cost-effective option"
+      }
     ]
   },
   {
@@ -122,6 +140,23 @@ const modelCategories: ModelCategory[] = [
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
       }
+    ],
+    githubModels: [
+      {
+        id: "openai/gpt-4.1",
+        name: "GPT-4.1",
+        description: "Latest GPT-4 model via GitHub Models"
+      },
+      {
+        id: "openai/gpt-4o",
+        name: "GPT-4o",
+        description: "Strong overall performance for coding tasks"
+      },
+      {
+        id: "openai/gpt-4o-mini",
+        name: "GPT-4o Mini",
+        description: "Faster, more cost-effective option"
+      }
     ]
   },
   {
@@ -167,6 +202,23 @@ const modelCategories: ModelCategory[] = [
         id: "claude-3-opus-20240229",
         name: "Claude 3 Opus",
         description: "Top-level intelligence, fluency, and understanding"
+      }
+    ],
+    githubModels: [
+      {
+        id: "openai/gpt-4.1",
+        name: "GPT-4.1",
+        description: "Latest GPT-4 model via GitHub Models"
+      },
+      {
+        id: "openai/gpt-4o",
+        name: "GPT-4o",
+        description: "Best for analyzing code and error messages"
+      },
+      {
+        id: "openai/gpt-4o-mini",
+        name: "GPT-4o Mini",
+        description: "Faster, more cost-effective option"
       }
     ]
   }
@@ -386,6 +438,26 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                   </div>
                 </div>
               </div>
+              <div
+                className={`flex-1 p-2 rounded-lg cursor-pointer transition-colors ${
+                  apiProvider === "github"
+                    ? "bg-white/10 border border-white/20"
+                    : "bg-black/30 border border-white/5 hover:bg-white/5"
+                }`}
+                onClick={() => handleProviderChange("github")}
+              >
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`w-3 h-3 rounded-full ${
+                      apiProvider === "github" ? "bg-white" : "bg-white/20"
+                    }`}
+                  />
+                  <div className="flex flex-col">
+                    <p className="font-medium text-white text-sm">GitHub</p>
+                    <p className="text-xs text-white/60">GPT-4.1 models</p>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           
@@ -393,6 +465,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
             <label className="text-sm font-medium text-white" htmlFor="apiKey">
             {apiProvider === "openai" ? "OpenAI API Key" : 
              apiProvider === "gemini" ? "Gemini API Key" : 
+             apiProvider === "github" ? "GitHub Personal Access Token" :
              "Anthropic API Key"}
             </label>
             <Input
@@ -403,6 +476,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               placeholder={
                 apiProvider === "openai" ? "sk-..." : 
                 apiProvider === "gemini" ? "Enter your Gemini API key" :
+                apiProvider === "github" ? "github_pat_..." :
                 "sk-ant-..."
               }
               className="bg-black/50 border-white/10 text-white"
@@ -413,7 +487,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               </p>
             )}
             <p className="text-xs text-white/50">
-              Your API key is stored locally and never sent to any server except {apiProvider === "openai" ? "OpenAI" : "Google"}
+              Your API key is stored locally and never sent to any server except {apiProvider === "openai" ? "OpenAI" : apiProvider === "github" ? "GitHub Models" : apiProvider === "gemini" ? "Google" : "Anthropic"}
             </p>
             <div className="mt-2 p-2 rounded-md bg-white/5 border border-white/10">
               <p className="text-xs text-white/80 mb-1">Don't have an API key?</p>
@@ -440,6 +514,19 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
                     className="text-blue-400 hover:underline cursor-pointer">API Keys</button> section
                   </p>
                   <p className="text-xs text-white/60">3. Create a new API key and paste it here</p>
+                </>
+              ) : apiProvider === "github" ? (
+                <>
+                  <p className="text-xs text-white/60 mb-1">1. Go to <button 
+                    onClick={() => openExternalLink('https://github.com/marketplace/models')} 
+                    className="text-blue-400 hover:underline cursor-pointer">GitHub Models</button>
+                  </p>
+                  <p className="text-xs text-white/60 mb-1">2. Sign up for free access with rate limits</p>
+                  <p className="text-xs text-white/60 mb-1">3. Create a Personal Access Token with models:read permission at <button 
+                    onClick={() => openExternalLink('https://github.com/settings/tokens')} 
+                    className="text-blue-400 hover:underline cursor-pointer">Settings</button>
+                  </p>
+                  <p className="text-xs text-white/60">4. Paste the github_pat_... token here</p>
                 </>
               ) : (
                 <>
@@ -511,6 +598,7 @@ export function SettingsDialog({ open: externalOpen, onOpenChange }: SettingsDia
               const models = 
                 apiProvider === "openai" ? category.openaiModels : 
                 apiProvider === "gemini" ? category.geminiModels :
+                apiProvider === "github" ? category.githubModels :
                 category.anthropicModels;
               
               return (

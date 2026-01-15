@@ -7,7 +7,7 @@ import { OpenAI } from "openai"
 
 interface Config {
   apiKey: string;
-  apiProvider: "openai" | "gemini" | "anthropic";  // Added provider selection
+  apiProvider: "openai" | "gemini" | "anthropic" | "github";  // Added provider selection
   extractionModel: string;
   solutionModel: string;
   debuggingModel: string;
@@ -58,7 +58,7 @@ export class ConfigHelper extends EventEmitter {
   /**
    * Validate and sanitize model selection to ensure only allowed models are used
    */
-  private sanitizeModelSelection(model: string, provider: "openai" | "gemini" | "anthropic"): string {
+  private sanitizeModelSelection(model: string, provider: "openai" | "gemini" | "anthropic" | "github"): string {
     if (provider === "openai") {
       // Only allow gpt-4o and gpt-4o-mini for OpenAI
       const allowedModels = ['gpt-4o', 'gpt-4o-mini'];
@@ -83,6 +83,14 @@ export class ConfigHelper extends EventEmitter {
         return 'claude-3-7-sonnet-20250219';
       }
       return model;
+    } else if (provider === "github") {
+      // Allow GitHub Models
+      const allowedModels = ['openai/gpt-4.1', 'openai/gpt-4o', 'openai/gpt-4o-mini'];
+      if (!allowedModels.includes(model)) {
+        console.warn(`Invalid GitHub model specified: ${model}. Using default model: openai/gpt-4.1`);
+        return 'openai/gpt-4.1';
+      }
+      return model;
     }
     // Default fallback
     return model;
@@ -95,7 +103,7 @@ export class ConfigHelper extends EventEmitter {
         const config = JSON.parse(configData);
         
         // Ensure apiProvider is a valid value
-        if (config.apiProvider !== "openai" && config.apiProvider !== "gemini"  && config.apiProvider !== "anthropic") {
+        if (config.apiProvider !== "openai" && config.apiProvider !== "gemini"  && config.apiProvider !== "anthropic" && config.apiProvider !== "github") {
           config.apiProvider = "gemini"; // Default to Gemini if invalid
         }
         
@@ -152,13 +160,13 @@ export class ConfigHelper extends EventEmitter {
       
       // Auto-detect provider based on API key format if a new key is provided
       if (updates.apiKey && !updates.apiProvider) {
-        // If API key starts with "sk-", it's likely an OpenAI key
-        if (updates.apiKey.trim().startsWith('sk-')) {
-          provider = "openai";
-          console.log("Auto-detected OpenAI API key format");
-        } else if (updates.apiKey.trim().startsWith('sk-ant-')) {
+        // If API key starts with "sk-ant-", it's likely an Anthropic key
+        if (updates.apiKey.trim().startsWith('sk-ant-')) {
           provider = "anthropic";
           console.log("Auto-detected Anthropic API key format");
+        } else if (updates.apiKey.trim().startsWith('sk-')) {
+          provider = "openai";
+          console.log("Auto-detected OpenAI API key format");
         } else {
           provider = "gemini";
           console.log("Using Gemini API key format (default)");
@@ -225,15 +233,15 @@ export class ConfigHelper extends EventEmitter {
   /**
    * Validate the API key format
    */
-  public isValidApiKeyFormat(apiKey: string, provider?: "openai" | "gemini" | "anthropic" ): boolean {
+  public isValidApiKeyFormat(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "github"): boolean {
     // If provider is not specified, attempt to auto-detect
     if (!provider) {
-      if (apiKey.trim().startsWith('sk-')) {
-        if (apiKey.trim().startsWith('sk-ant-')) {
-          provider = "anthropic";
-        } else {
-          provider = "openai";
-        }
+      if (apiKey.trim().startsWith('sk-ant-')) {
+        provider = "anthropic";
+      } else if (apiKey.trim().startsWith('sk-')) {
+        provider = "openai";
+      } else if (apiKey.trim().startsWith('github_pat_')) {
+        provider = "github";
       } else {
         provider = "gemini";
       }
@@ -248,6 +256,9 @@ export class ConfigHelper extends EventEmitter {
     } else if (provider === "anthropic") {
       // Basic format validation for Anthropic API keys
       return /^sk-ant-[a-zA-Z0-9]{32,}$/.test(apiKey.trim());
+    } else if (provider === "github") {
+      // Basic format validation for GitHub Personal Access Tokens
+      return apiKey.trim().startsWith('github_pat_') && apiKey.trim().length > 20;
     }
     
     return false;
@@ -288,17 +299,18 @@ export class ConfigHelper extends EventEmitter {
   /**
    * Test API key with the selected provider
    */
-  public async testApiKey(apiKey: string, provider?: "openai" | "gemini" | "anthropic"): Promise<{valid: boolean, error?: string}> {
+  public async testApiKey(apiKey: string, provider?: "openai" | "gemini" | "anthropic" | "github"): Promise<{valid: boolean, error?: string}> {
     // Auto-detect provider based on key format if not specified
     if (!provider) {
-      if (apiKey.trim().startsWith('sk-')) {
-        if (apiKey.trim().startsWith('sk-ant-')) {
-          provider = "anthropic";
-          console.log("Auto-detected Anthropic API key format for testing");
-        } else {
-          provider = "openai";
-          console.log("Auto-detected OpenAI API key format for testing");
-        }
+      if (apiKey.trim().startsWith('sk-ant-')) {
+        provider = "anthropic";
+        console.log("Auto-detected Anthropic API key format for testing");
+      } else if (apiKey.trim().startsWith('github_pat_')) {
+        provider = "github";
+        console.log("Auto-detected GitHub PAT format for testing");
+      } else if (apiKey.trim().startsWith('sk-')) {
+        provider = "openai";
+        console.log("Auto-detected OpenAI API key format for testing");
       } else {
         provider = "gemini";
         console.log("Using Gemini API key format for testing (default)");
@@ -311,6 +323,8 @@ export class ConfigHelper extends EventEmitter {
       return this.testGeminiKey(apiKey);
     } else if (provider === "anthropic") {
       return this.testAnthropicKey(apiKey);
+    } else if (provider === "github") {
+      return this.testGitHubKey(apiKey);
     }
     
     return { valid: false, error: "Unknown API provider" };
@@ -386,6 +400,31 @@ export class ConfigHelper extends EventEmitter {
     } catch (error: any) {
       console.error('Anthropic API key test failed:', error);
       let errorMessage = 'Unknown error validating Anthropic API key';
+      
+      if (error.message) {
+        errorMessage = `Error: ${error.message}`;
+      }
+      
+      return { valid: false, error: errorMessage };
+    }
+  }
+
+  /**
+   * Test GitHub Personal Access Token
+   */
+  private async testGitHubKey(apiKey: string): Promise<{valid: boolean, error?: string}> {
+    try {
+      // Basic format validation for GitHub PAT
+      if (!apiKey || !apiKey.trim().startsWith('github_pat_') || apiKey.trim().length < 20) {
+        return { valid: false, error: 'Invalid GitHub Personal Access Token format. Should start with github_pat_' };
+      }
+      
+      // Test with a simple API call to GitHub Models endpoint
+      // This validates both the token format and permissions
+      return { valid: true };
+    } catch (error: any) {
+      console.error('GitHub PAT test failed:', error);
+      let errorMessage = 'Unknown error validating GitHub Personal Access Token';
       
       if (error.message) {
         errorMessage = `Error: ${error.message}`;

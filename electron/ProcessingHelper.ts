@@ -8,6 +8,8 @@ import { app, BrowserWindow, dialog } from "electron"
 import { OpenAI } from "openai"
 import { configHelper } from "./ConfigHelper"
 import Anthropic from '@anthropic-ai/sdk';
+import ModelClient from "@azure-rest/ai-inference";
+import { AzureKeyCredential } from "@azure/core-auth";
 
 // Interface for Gemini API requests
 interface GeminiMessage {
@@ -49,6 +51,7 @@ export class ProcessingHelper {
   private openaiClient: OpenAI | null = null
   private geminiApiKey: string | null = null
   private anthropicClient: Anthropic | null = null
+  private githubClient: any | null = null
 
   // AbortControllers for API requests
   private currentProcessingAbortController: AbortController | null = null
@@ -83,17 +86,20 @@ export class ProcessingHelper {
           });
           this.geminiApiKey = null;
           this.anthropicClient = null;
+          this.githubClient = null;
           console.log("OpenAI client initialized successfully");
         } else {
           this.openaiClient = null;
           this.geminiApiKey = null;
           this.anthropicClient = null;
+          this.githubClient = null;
           console.warn("No API key available, OpenAI client not initialized");
         }
       } else if (config.apiProvider === "gemini"){
         // Gemini client initialization
         this.openaiClient = null;
         this.anthropicClient = null;
+        this.githubClient = null;
         if (config.apiKey) {
           this.geminiApiKey = config.apiKey;
           console.log("Gemini API key set successfully");
@@ -101,12 +107,14 @@ export class ProcessingHelper {
           this.openaiClient = null;
           this.geminiApiKey = null;
           this.anthropicClient = null;
+          this.githubClient = null;
           console.warn("No API key available, Gemini client not initialized");
         }
       } else if (config.apiProvider === "anthropic") {
         // Reset other clients
         this.openaiClient = null;
         this.geminiApiKey = null;
+        this.githubClient = null;
         if (config.apiKey) {
           this.anthropicClient = new Anthropic({
             apiKey: config.apiKey,
@@ -118,13 +126,34 @@ export class ProcessingHelper {
           this.openaiClient = null;
           this.geminiApiKey = null;
           this.anthropicClient = null;
+          this.githubClient = null;
           console.warn("No API key available, Anthropic client not initialized");
+        }
+      } else if (config.apiProvider === "github") {
+        // GitHub Models client initialization
+        this.openaiClient = null;
+        this.geminiApiKey = null;
+        this.anthropicClient = null;
+        if (config.apiKey) {
+          const endpoint = "https://models.github.ai/inference";
+          this.githubClient = ModelClient(
+            endpoint,
+            new AzureKeyCredential(config.apiKey)
+          );
+          console.log("GitHub Models client initialized successfully");
+        } else {
+          this.openaiClient = null;
+          this.geminiApiKey = null;
+          this.anthropicClient = null;
+          this.githubClient = null;
+          console.warn("No API key available, GitHub client not initialized");
         }
       }
     } catch (error) {
       console.error("Failed to initialize AI client:", error);
       this.openaiClient = null;
       this.geminiApiKey = null;
+      this.githubClient = null;
       this.anthropicClient = null;
     }
   }
@@ -229,6 +258,17 @@ export class ProcessingHelper {
       
       if (!this.anthropicClient) {
         console.error("Anthropic client not initialized");
+        mainWindow.webContents.send(
+          this.deps.PROCESSING_EVENTS.API_KEY_INVALID
+        );
+        return;
+      }
+    } else if (config.apiProvider === "github" && !this.githubClient) {
+      // Add check for GitHub client
+      this.initializeAIClient();
+      
+      if (!this.githubClient) {
+        console.error("GitHub client not initialized");
         mainWindow.webContents.send(
           this.deps.PROCESSING_EVENTS.API_KEY_INVALID
         );
@@ -567,11 +607,29 @@ export class ProcessingHelper {
           // Handle when Gemini might wrap the JSON in markdown code blocks
           const jsonText = responseText.replace(/```json|```/g, '').trim();
           problemInfo = JSON.parse(jsonText);
-        } catch (error) {
+        } catch (error: any) {
           console.error("Error using Gemini API:", error);
+          console.error("Error response data:", error?.response?.data);
+          console.error("Error status:", error?.response?.status);
+          
+          // Check for specific error types
+          if (error?.response?.status === 429) {
+            const errorMessage = error?.response?.data?.error?.message || "Rate limit exceeded";
+            console.error("Gemini 429 details:", errorMessage);
+            return {
+              success: false,
+              error: `Gemini API rate limit: ${errorMessage}. Try: 1) Wait a few minutes 2) Check project quota at console.cloud.google.com 3) Enable billing if required`
+            };
+          } else if (error?.response?.status === 401 || error?.response?.status === 403) {
+            return {
+              success: false,
+              error: "Invalid Gemini API key. Please check your settings."
+            };
+          }
+          
           return {
             success: false,
-            error: "Failed to process with Gemini API. Please check your API key or try again later."
+            error: `Failed to process with Gemini API: ${error?.response?.data?.error?.message || error.message || 'Unknown error'}`
           };
         }
       } else if (config.apiProvider === "anthropic") {
@@ -634,6 +692,84 @@ export class ProcessingHelper {
             error: "Failed to process with Anthropic API. Please check your API key or try again later."
           };
         }
+      } else if (config.apiProvider === "github") {
+        // Use GitHub Models API (Azure AI Inference SDK)
+        if (!this.githubClient) {
+          return {
+            success: false,
+            error: "GitHub Models client not configured. Please check your settings."
+          };
+        }
+
+        try {
+          // Create messages for GitHub Models
+          const messages = [
+            {
+              role: "system",
+              content: "You are a coding challenge interpreter. Extract all information and return only valid JSON without any markdown formatting."
+            },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: `Extract the coding problem details from these screenshots. Return in JSON format with these fields: problem_statement, constraints, example_input, example_output. Preferred coding language is ${language}.`
+                },
+                ...imageDataList.map(data => ({
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64,${data}` }
+                }))
+              ]
+            }
+          ];                
+          
+          // Use axios directly for GitHub Models API since we need better error handling
+          const githubResponse = await axios.default.post(
+            `https://models.github.ai/inference/chat/completions`,
+            {
+              messages: messages,
+              model: config.extractionModel || "openai/gpt-4.1",
+              temperature: 0.2,
+              max_tokens: 4000
+            },
+            {
+              headers: {
+                "Authorization": `Bearer ${configHelper.loadConfig().apiKey}`,
+                "Content-Type": "application/json"
+              },
+              signal
+            }
+          );
+
+          const responseText = githubResponse.data.choices[0].message.content;
+          const jsonText = responseText.replace(/```json|```/g, '').trim();
+          problemInfo = JSON.parse(jsonText);
+        } catch (error: any) {
+          console.error("Error using GitHub Models API:", error);
+
+          if (error.status === 401) {
+            return {
+              success: false,
+              error: "Invalid GitHub token. Please ensure your token has models:read permission."
+            };
+          } else if (error.status === 429) {
+            return {
+              success: false,
+              error: "GitHub Models rate limit exceeded. Please wait or enable billing for higher limits."
+            };
+          }
+
+          return {
+            success: false,
+            error: "Failed to process with GitHub Models API. Please check your token or try again later."
+          };
+        }
+      } else if (config.apiProvider === "groq") {
+        // Groq no longer supports vision models - inform user to use a different provider for screenshot extraction
+        return {
+          success: false,
+          error: "Groq has deprecated their vision models. Please use OpenAI, Gemini, or Anthropic for screenshot processing. Groq can still be used for solution generation and debugging."
+        };
       }
       
       // Update the user on progress
@@ -734,13 +870,19 @@ export class ProcessingHelper {
       }
 
       // Create prompt for solution generation
-      const promptText = `
-Generate a detailed solution for the following coding problem:
+const promptText = `
+You are a tutoring assistant for interview preparation. The user is practicing.
 
-PROBLEM STATEMENT:
+TASK:
+Identify the question type (DSA / SQL / Aptitude / Logical Reasoning / Coding MCQ / Other) and respond accordingly.
+
+QUESTION:
 ${problemInfo.problem_statement}
 
-CONSTRAINTS:
+OPTIONS (if any):
+${problemInfo.options || "No options provided."}
+
+CONSTRAINTS / GIVEN INFO:
 ${problemInfo.constraints || "No specific constraints provided."}
 
 EXAMPLE INPUT:
@@ -749,18 +891,54 @@ ${problemInfo.example_input || "No example input provided."}
 EXAMPLE OUTPUT:
 ${problemInfo.example_output || "No example output provided."}
 
-LANGUAGE: ${language}
+PREFERRED LANGUAGE (if coding needed): ${language}
 
-I need the response in the following format:
-1. Code: A clean, optimized implementation in ${language}
-2. Your Thoughts: A list of key insights and reasoning behind your approach
-3. Time complexity: O(X) with a detailed explanation (at least 2 sentences)
-4. Space complexity: O(X) with a detailed explanation (at least 2 sentences)
+GLOBAL RULES:
+- Be correct and clear.
+- If the prompt is ambiguous, state assumptions briefly.
+- Prioritize the most optimal method (especially for DSA).
+- Do NOT add unnecessary fluff.
 
-For complexity explanations, please be thorough. For example: "Time complexity: O(n) because we iterate through the array only once. This is optimal as we need to examine each element at least once to find the solution." or "Space complexity: O(n) because in the worst case, we store all elements in the hashmap. The additional space scales linearly with the input size."
+OUTPUT RULES BY TYPE:
 
-Your solution should be efficient, well-commented, and handle edge cases.
+A) If it is a DSA / Programming problem:
+Return exactly:
+1. Approach (2-6 bullets, include key idea)
+2. Code (most optimal solution in ${language}, clean + commented)
+3. Time Complexity: O(X) + 2-4 sentences explaining why
+4. Space Complexity: O(X) + 2-4 sentences explaining why
+5. Edge Cases (3-6 bullets)
+
+DSA OPTIMALITY REQUIREMENT:
+- Choose the best asymptotic time complexity possible for the problem.
+- Also optimize space: prefer O(1) extra space when feasible.
+- If multiple optimal approaches exist, pick the simplest and most robust.
+
+B) If it is an SQL question:
+Return exactly:
+1. Final Query (SQL only)
+2. Explanation (3-8 lines describing joins/filters/grouping/window funcs)
+3. Complexity Note (what dominates cost: scans, joins, grouping; 2-3 lines)
+4. Edge Cases (NULLs, duplicates, ties; 3-6 bullets)
+
+C) If it is Aptitude or Logical Reasoning:
+Return exactly:
+1. Correct Answer (option letter if MCQ, else final value)
+2. Short Reasoning (5-10 lines, step-by-step)
+3. Quick Trick (if any, 2-4 lines)
+4. Common Traps (2-4 bullets)
+
+D) If it is a Coding MCQ:
+Return exactly:
+1. Correct Option (A/B/C/D or exact option text)
+2. Why (4-8 lines)
+3. Why others are wrong (1-2 lines each)
+4. Key Concept (1 line)
+
+If the type is unclear:
+- Ask one short clarifying question at the end, but still attempt the best answer.
 `;
+
 
       let responseContent;
       
@@ -827,11 +1005,27 @@ Your solution should be efficient, well-commented, and handle edge cases.
           }
           
           responseContent = responseData.candidates[0].content.parts[0].text;
-        } catch (error) {
+        } catch (error: any) {
           console.error("Error using Gemini API for solution:", error);
+          console.error("Error response data:", error?.response?.data);
+          
+          // Check for specific error types
+          if (error?.response?.status === 429) {
+            const errorMessage = error?.response?.data?.error?.message || "Rate limit exceeded";
+            return {
+              success: false,
+              error: `Gemini API rate limit: ${errorMessage}. Check console.cloud.google.com for quota settings.`
+            };
+          } else if (error?.response?.status === 401 || error?.response?.status === 403) {
+            return {
+              success: false,
+              error: "Invalid Gemini API key. Please check your settings."
+            };
+          }
+          
           return {
             success: false,
-            error: "Failed to generate solution with Gemini API. Please check your API key or try again later."
+            error: `Failed to generate solution: ${error?.response?.data?.error?.message || error.message || 'Unknown error'}`
           };
         }
       } else if (config.apiProvider === "anthropic") {
@@ -886,6 +1080,57 @@ Your solution should be efficient, well-commented, and handle edge cases.
             error: "Failed to generate solution with Anthropic API. Please check your API key or try again later."
           };
         }
+      } else if (config.apiProvider === "github") {
+        // GitHub Models processing
+        if (!this.githubClient) {
+          return {
+            success: false,
+            error: "GitHub Models client not configured. Please check your settings."
+          };
+        }
+
+        try {
+          const githubResponse = await axios.default.post(
+            `https://models.github.ai/inference/chat/completions`,
+            {
+              messages: [
+                { role: "system", content: "You are an expert coding interview assistant. Provide clear, optimal solutions with detailed explanations." },
+                { role: "user", content: promptText }
+              ],
+              model: config.solutionModel || "openai/gpt-4.1",
+              temperature: 0.2,
+              max_tokens: 4000
+            },
+            {
+              headers: {
+                "Authorization": `Bearer ${configHelper.loadConfig().apiKey}`,
+                "Content-Type": "application/json"
+              }
+            }
+          );
+
+          responseContent = githubResponse.data.choices[0].message.content;
+        } catch (error: any) {
+          console.error("Error using GitHub Models API for solution:", error);
+
+          if (error.status === 401) {
+            return {
+              success: false,
+              error: "Invalid GitHub token. Please ensure your token has models:read permission."
+            };
+          } else if (error.status === 429) {
+            return {
+              success: false,
+              error: "GitHub Models rate limit exceeded. Please wait or enable billing for higher limits."
+            };
+          }
+
+          return {
+            success: false,
+            error: "Failed to generate solution with GitHub Models API. Please check your token or try again later."
+          };
+        }
+      } else if (config.apiProvider === "groq") {
       }
       
       // Extract parts from the response
@@ -1148,11 +1393,27 @@ If you include code examples, use proper markdown code blocks with language spec
           }
           
           debugContent = responseData.candidates[0].content.parts[0].text;
-        } catch (error) {
+        } catch (error: any) {
           console.error("Error using Gemini API for debugging:", error);
+          console.error("Error response data:", error?.response?.data);
+          
+          // Check for specific error types
+          if (error?.response?.status === 429) {
+            const errorMessage = error?.response?.data?.error?.message || "Rate limit exceeded";
+            return {
+              success: false,
+              error: `Gemini API rate limit: ${errorMessage}. Check console.cloud.google.com for quota settings.`
+            };
+          } else if (error?.response?.status === 401 || error?.response?.status === 403) {
+            return {
+              success: false,
+              error: "Invalid Gemini API key. Please check your settings."
+            };
+          }
+          
           return {
             success: false,
-            error: "Failed to process debug request with Gemini API. Please check your API key or try again later."
+            error: `Failed to debug: ${error?.response?.data?.error?.message || error.message || 'Unknown error'}`
           };
         }
       } else if (config.apiProvider === "anthropic") {
@@ -1242,6 +1503,105 @@ If you include code examples, use proper markdown code blocks with language spec
           return {
             success: false,
             error: "Failed to process debug request with Anthropic API. Please check your API key or try again later."
+          };
+        }
+      } else if (config.apiProvider === "github") {
+        // GitHub Models processing for debugging
+        if (!this.githubClient) {
+          return {
+            success: false,
+            error: "GitHub Models client not configured. Please check your settings."
+          };
+        }
+
+        try {
+          const debugPrompt = `
+You are a coding interview assistant helping debug and improve solutions. Analyze these screenshots which include either error messages, incorrect outputs, or test cases, and provide detailed debugging help.
+
+I'm solving this coding problem: "${problemInfo.problem_statement}" in ${language}. I need help with debugging or improving my solution.
+
+YOUR RESPONSE MUST FOLLOW THIS EXACT STRUCTURE WITH THESE SECTION HEADERS:
+### Issues Identified
+- List each issue as a bullet point with clear explanation
+
+### Specific Improvements and Corrections
+- List specific code changes needed as bullet points
+
+### Optimizations
+- List any performance optimizations if applicable
+
+### Explanation of Changes Needed
+Here provide a clear explanation of why the changes are needed
+
+### Key Points
+- Summary bullet points of the most important takeaways
+
+If you include code examples, use proper markdown code blocks with language specification.
+`;
+
+          const messages = [
+            {
+              role: "system",
+              content: "You are a coding interview assistant helping debug and improve solutions."
+            },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: debugPrompt
+                },
+                ...imageDataList.map(data => ({
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64,${data}` }
+                }))
+              ]
+            }
+          ];
+
+          if (mainWindow) {
+            mainWindow.webContents.send("processing-status", {
+              message: "Analyzing code and generating debug feedback with GitHub Models...",
+              progress: 60
+            });
+          }
+
+          const githubResponse = await axios.default.post(
+            `https://models.github.ai/inference/chat/completions`,
+            {
+              messages: messages,
+              model: config.debuggingModel || "openai/gpt-4.1",
+              temperature: 0.2,
+              max_tokens: 4000
+            },
+            {
+              headers: {
+                "Authorization": `Bearer ${configHelper.loadConfig().apiKey}`,
+                "Content-Type": "application/json"
+              },
+              signal
+            }
+          );
+
+          debugContent = githubResponse.data.choices[0].message.content;
+        } catch (error: any) {
+          console.error("Error using GitHub Models API for debugging:", error);
+
+          if (error.status === 401) {
+            return {
+              success: false,
+              error: "Invalid GitHub token. Please ensure your token has models:read permission."
+            };
+          } else if (error.status === 429) {
+            return {
+              success: false,
+              error: "GitHub Models rate limit exceeded. Please wait or enable billing for higher limits."
+            };
+          }
+
+          return {
+            success: false,
+            error: "Failed to process debug request with GitHub Models API. Please check your token or try again later."
           };
         }
       }
